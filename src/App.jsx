@@ -1200,7 +1200,7 @@ function InvoiceModal({ sale, onClose }) {
         </div>
       </div>
       <div className="flex gap-2 mt-5">
-        <SecondaryButton className="flex-1" onClick={() => window.print()}>
+        <SecondaryButton className="flex-1" onClick={() => printInvoiceWithFilename(sale.invoiceNumber)}>
           <Printer size={15} /> Print Invoice
         </SecondaryButton>
         <PrimaryButton className="flex-1" onClick={onClose}>
@@ -1249,6 +1249,24 @@ function getPrintPortalNode() {
 }
 
 /*
+ * Browsers use document.title as the suggested filename when the print
+ * dialog's destination is "Save as PDF". Swap it to Invoice-{number} for
+ * the duration of the print job (browsers append .pdf themselves), then
+ * restore it once printing finishes.
+ */
+function printInvoiceWithFilename(invoiceNumber) {
+  if (typeof document === "undefined") return;
+  const originalTitle = document.title;
+  const restoreTitle = () => {
+    document.title = originalTitle;
+    window.removeEventListener("afterprint", restoreTitle);
+  };
+  window.addEventListener("afterprint", restoreTitle);
+  document.title = `Invoice-${invoiceNumber}`;
+  window.print();
+}
+
+/*
  * Renders a full A4 tax-invoice for `sale`. Mounted once per
  * invoice-viewing flow (InvoiceModal, and the post-sale success screen in
  * Billing) right next to the sale data each flow already has, so it
@@ -1280,7 +1298,7 @@ function PrintableInvoice({ sale, settings, customers }) {
         <div>
           <p className="text-xl font-bold text-gray-900">{settings.storeName}</p>
           <p className="text-xs text-gray-600 mt-1 max-w-xs">{settings.address}</p>
-          <p className="text-xs text-gray-600">Phone: {settings.phone}</p>
+          <p className="text-xs text-gray-600">Phone: {formatPhoneDisplay(normalizePhoneDigits(settings.phone))}</p>
           {settings.gst && <p className="text-xs text-gray-600">GSTIN: {settings.gst}</p>}
         </div>
         <div className="text-right">
@@ -2802,7 +2820,7 @@ function Billing() {
               <SecondaryButton
                 className="flex-1"
                 onClick={() =>
-                  window.print()
+                  printInvoiceWithFilename(successSale.invoiceNumber)
                 }
               >
                 <Printer
