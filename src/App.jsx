@@ -2,10 +2,12 @@ import React, { useState, useMemo, useEffect, useRef, createContext, useContext 
 import { createPortal } from "react-dom";
 import { useAuth } from "./auth/AuthContext";
 import { fetchAllData, dbInsertProduct, dbUpdateProduct, dbSetProductStock, dbInsertMovement, dbInsertCustomer, dbInsertSale, dbInsertSaleItems, dbInsertFollowup, dbUpsertSettings } from "./lib/db";
+import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas";
 import {
   LayoutDashboard, Receipt, Package, Boxes, TrendingUp, Calendar as CalendarIcon,
   BarChart3, Settings as SettingsIcon, Search, Plus, Minus, X, ChevronLeft, ChevronRight,
-  ChevronDown, AlertTriangle, CheckCircle2, Printer, User, Trash2, Pencil, History,
+  ChevronDown, AlertTriangle, CheckCircle2, Download, User, Trash2, Pencil, History,
   PackagePlus, SlidersHorizontal, ShoppingCart, Banknote, Smartphone, CreditCard, Menu,
   ArrowUpRight, ArrowDownRight, IndianRupee, PauseCircle, PlayCircle, Info, XCircle,
   Users, Phone, MessageCircle, Copy, Snowflake, BellRing, UserPlus, Clock, PhoneCall, LogOut,
@@ -1154,7 +1156,19 @@ function ToastStack() {
 
 function InvoiceModal({ sale, onClose }) {
   const { settings, customers } = useStore();
+  const [downloading, setDownloading] = useState(false);
   if (!sale) return null;
+
+  async function handleDownload() {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      await downloadInvoicePdf(sale.invoiceNumber);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return (
     <>
     <Modal open={!!sale} onClose={onClose} title={`Invoice #${sale.invoiceNumber}`} width="max-w-md">
@@ -1200,8 +1214,8 @@ function InvoiceModal({ sale, onClose }) {
         </div>
       </div>
       <div className="flex gap-2 mt-5">
-        <SecondaryButton className="flex-1" onClick={() => printInvoiceWithFilename(sale.invoiceNumber)}>
-          <Printer size={15} /> Print Invoice
+        <SecondaryButton className="flex-1" onClick={handleDownload} disabled={downloading}>
+          <Download size={15} /> {downloading ? "Preparing PDF…" : "Download Invoice PDF"}
         </SecondaryButton>
         <PrimaryButton className="flex-1" onClick={onClose}>
           Close
@@ -1249,21 +1263,87 @@ function getPrintPortalNode() {
 }
 
 /*
- * Browsers use document.title as the suggested filename when the print
- * dialog's destination is "Save as PDF". Swap it to Invoice-{number} for
- * the duration of the print job (browsers append .pdf themselves), then
- * restore it once printing finishes.
+ * Renders the currently-portaled invoice (#print-invoice-root, painted
+ * off-screen at A4 width by index.css) to a canvas, then embeds it in a
+ * jsPDF A4 document. Splits across multiple pages if the invoice is
+ * ever taller than one A4 page (e.g. a great many line items).
  */
-function printInvoiceWithFilename(invoiceNumber) {
-  if (typeof document === "undefined") return;
-  const originalTitle = document.title;
-  const restoreTitle = () => {
-    document.title = originalTitle;
-    window.removeEventListener("afterprint", restoreTitle);
-  };
-  window.addEventListener("afterprint", restoreTitle);
-  document.title = `Invoice-${invoiceNumber}`;
-  window.print();
+async function renderInvoicePdfBlob() {
+  const node = document.getElementById("print-invoice-root");
+  if (!node) return null;
+
+  const canvas = await html2canvas(node, {
+    scale: 2,
+    backgroundColor: "#ffffff",
+  });
+  const imgData = canvas.toDataURL("image/png");
+
+  const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const imgWidth = pageWidth;
+  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+  let heightLeft = imgHeight;
+  let position = 0;
+  pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+  heightLeft -= pageHeight;
+
+  while (heightLeft > 0) {
+    position = heightLeft - imgHeight;
+    pdf.addPage();
+    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+  }
+
+  return pdf.output("blob");
+}
+
+function isIOSDevice() {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+/*
+ * Android + Mac (+ any other desktop browser): a plain <a download> is
+ * the reliable, native way to save a Blob to disk.
+ *
+ * iPhone/iPad: Mobile Safari does not offer a real "download" concept —
+ * the closest native equivalent is the share sheet, which lets the
+ * person save the PDF to Files, AirDrop it, etc. We use the Web Share
+ * API with a File when the browser supports sharing files, falling
+ * back to the normal download link otherwise.
+ */
+async function downloadInvoicePdf(invoiceNumber) {
+  const blob = await renderInvoicePdfBlob();
+  if (!blob) return;
+
+  const filename = `Invoice-${invoiceNumber}.pdf`;
+
+  if (isIOSDevice() && typeof navigator !== "undefined" && navigator.canShare) {
+    const file = new File([blob], filename, { type: "application/pdf" });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: filename });
+        return;
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        // Sharing failed for some other reason — fall through to a normal download.
+      }
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 /*
@@ -1804,6 +1884,7 @@ function Billing() {
   const [heldOpen, setHeldOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [successSale, setSuccessSale] = useState(null);
+  const [downloadingInvoice, setDownloadingInvoice] = useState(false);
   const [phoneInput, setPhoneInput] = useState("");
   const [newCustomerName, setNewCustomerName] = useState("");
   const [customerSaved, setCustomerSaved] = useState(null);
@@ -2164,6 +2245,16 @@ function Billing() {
     UPI: Smartphone,
     Card: CreditCard,
   };
+
+  async function handleDownloadInvoice() {
+    if (downloadingInvoice || !successSale) return;
+    setDownloadingInvoice(true);
+    try {
+      await downloadInvoicePdf(successSale.invoiceNumber);
+    } finally {
+      setDownloadingInvoice(false);
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
@@ -2819,14 +2910,13 @@ function Billing() {
 
               <SecondaryButton
                 className="flex-1"
-                onClick={() =>
-                  printInvoiceWithFilename(successSale.invoiceNumber)
-                }
+                onClick={handleDownloadInvoice}
+                disabled={downloadingInvoice}
               >
-                <Printer
+                <Download
                   size={15}
                 />
-                Print Invoice
+                {downloadingInvoice ? "Preparing PDF…" : "Download Invoice PDF"}
               </SecondaryButton>
 
               <PrimaryButton
