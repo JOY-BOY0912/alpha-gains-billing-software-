@@ -1,3 +1,34 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * PRINT INVOICE
+ * -------------
+ * The invoice is rendered through a React portal directly into
+ * #print-invoice-root, a node attached to <body> outside the app's own
+ * DOM tree (see PrintableInvoice / getPrintPortalNode in App.jsx).
+ *
+ * That makes isolation simple and reliable: on print, hide every other
+ * direct child of <body> (the whole app, whatever its root element is)
+ * and show only the invoice. No dependency on nested visibility/display
+ * toggles inside the app tree, which is what broke this previously —
+ * an ancestor with its own `display: none` silently defeated a
+ * visibility-based override.
+ */
+#print-invoice-root {
+  display: none;
+}
+
+@media print {
+  body > *:not(#print-invoice-root) {
+    display: none !important;
+  }
+  #print-invoice-root {
+    display: block !important;
+  }
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+}

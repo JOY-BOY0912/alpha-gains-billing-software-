@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, createContext, useContext } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "./auth/AuthContext";
 import { fetchAllData, dbInsertProduct, dbUpdateProduct, dbSetProductStock, dbInsertMovement, dbInsertCustomer, dbInsertSale, dbInsertSaleItems, dbInsertFollowup, dbUpsertSettings } from "./lib/db";
 import {
@@ -56,6 +57,53 @@ function formatCompactINR(n) {
 function parseISO(iso) {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y, m - 1, d);
+}
+
+/*
+ * AMOUNT IN WORDS (Indian numbering: Crore / Lakh / Thousand)
+ * Only handles whole rupees — formatINR() already rounds every amount
+ * shown in the app, so invoice totals never carry paise.
+ */
+const NUM_WORDS_ONES = [
+  "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+  "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen",
+];
+const NUM_WORDS_TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+
+function twoDigitWords(n) {
+  if (n < 20) return NUM_WORDS_ONES[n];
+  const t = Math.floor(n / 10);
+  const o = n % 10;
+  return NUM_WORDS_TENS[t] + (o ? " " + NUM_WORDS_ONES[o] : "");
+}
+
+function threeDigitWords(n) {
+  const h = Math.floor(n / 100);
+  const rest = n % 100;
+  let str = "";
+  if (h) str += NUM_WORDS_ONES[h] + " Hundred";
+  if (rest) str += (str ? " " : "") + twoDigitWords(rest);
+  return str;
+}
+
+function numberToWordsIndian(amount) {
+  let num = Math.floor(Math.abs(Number(amount) || 0));
+  if (num === 0) return "Zero";
+
+  const crore = Math.floor(num / 10000000);
+  num %= 10000000;
+  const lakh = Math.floor(num / 100000);
+  num %= 100000;
+  const thousand = Math.floor(num / 1000);
+  num %= 1000;
+  const hundred = num;
+
+  const parts = [];
+  if (crore) parts.push(threeDigitWords(crore) + " Crore");
+  if (lakh) parts.push(threeDigitWords(lakh) + " Lakh");
+  if (thousand) parts.push(threeDigitWords(thousand) + " Thousand");
+  if (hundred) parts.push(threeDigitWords(hundred));
+  return parts.join(" ");
 }
 
 function formatDateShort(iso) {
@@ -1105,9 +1153,10 @@ function ToastStack() {
 /* ------------------------------- invoice modal -------------------------------- */
 
 function InvoiceModal({ sale, onClose }) {
-  const { settings } = useStore();
+  const { settings, customers } = useStore();
   if (!sale) return null;
   return (
+    <>
     <Modal open={!!sale} onClose={onClose} title={`Invoice #${sale.invoiceNumber}`} width="max-w-md">
       <div className="text-center mb-4">
         <p className="text-sm font-semibold text-gray-900">{settings.storeName}</p>
@@ -1159,6 +1208,162 @@ function InvoiceModal({ sale, onClose }) {
         </PrimaryButton>
       </div>
     </Modal>
+    <PrintableInvoice sale={sale} settings={settings} customers={customers} />
+    </>
+  );
+}
+
+/* ---------------------------- printable A4 invoice ----------------------------- */
+
+/*
+ * The invoice must be the ONLY thing that appears in the print/PDF output —
+ * nothing from the app shell (sidebar, modals, toasts, the billing screen
+ * underneath the success modal) is acceptable.
+ *
+ * Nesting the invoice inside the normal component tree and trying to hide
+ * everything else with CSS (visibility/display toggles on ancestors) is
+ * fragile: any ancestor with its own `display: none` (e.g. a Tailwind
+ * `hidden` class) silently wins and the invoice never renders at all,
+ * while unrelated fixed-position UI (like the success modal) can still
+ * leak into the printed page. That was the actual bug here.
+ *
+ * The reliable fix: render the invoice through a React portal into a
+ * dedicated element attached directly to <body>, completely outside the
+ * app's own DOM subtree. Print CSS then only has to do one simple,
+ * bulletproof thing: hide every other direct child of <body> and show
+ * this one. See the #print-invoice-root rules in index.css.
+ */
+let printPortalNode = null;
+function getPrintPortalNode() {
+  if (typeof document === "undefined") return null;
+  if (printPortalNode && document.body.contains(printPortalNode)) {
+    return printPortalNode;
+  }
+  printPortalNode = document.getElementById("print-invoice-root");
+  if (!printPortalNode) {
+    printPortalNode = document.createElement("div");
+    printPortalNode.id = "print-invoice-root";
+    document.body.appendChild(printPortalNode);
+  }
+  return printPortalNode;
+}
+
+/*
+ * Renders a full A4 tax-invoice for `sale`. Mounted once per
+ * invoice-viewing flow (InvoiceModal, and the post-sale success screen in
+ * Billing) right next to the sale data each flow already has, so it
+ * always reflects the actual sale and the current Settings values —
+ * nothing here is hardcoded.
+ */
+function PrintableInvoice({ sale, settings, customers }) {
+  const portalNode = getPrintPortalNode();
+  if (!sale || !portalNode) return null;
+
+  const customer = sale.customerId
+    ? (customers || []).find((c) => c.id === sale.customerId)
+    : null;
+
+  const subtotal = Number(sale.subtotal) || 0;
+  const discount = Number(sale.discount) || 0;
+  const grandTotal = Number(sale.total) || 0;
+  /*
+   * The app does not currently record a tax rate anywhere (products,
+   * settings, or sales) — billing today is subtotal minus discount only.
+   * Tax is computed from the real numbers rather than assumed, so it
+   * correctly shows ₹0 until the app captures actual tax data.
+   */
+  const taxAmount = Math.max(0, grandTotal - (subtotal - discount));
+
+  return createPortal(
+    <div className="print-invoice">
+      <div className="flex justify-between items-start mb-6 pb-4 border-b-2 border-gray-800">
+        <div>
+          <p className="text-xl font-bold text-gray-900">{settings.storeName}</p>
+          <p className="text-xs text-gray-600 mt-1 max-w-xs">{settings.address}</p>
+          <p className="text-xs text-gray-600">Phone: {settings.phone}</p>
+          {settings.gst && <p className="text-xs text-gray-600">GSTIN: {settings.gst}</p>}
+        </div>
+        <div className="text-right">
+          <p className="text-base font-bold text-gray-900 uppercase tracking-wide">Tax Invoice</p>
+          <p className="text-xs text-gray-600 mt-1">Invoice No: {sale.invoiceNumber}</p>
+          <p className="text-xs text-gray-600">
+            Date: {formatDateShort(sale.dateISO)} · {sale.time}
+          </p>
+        </div>
+      </div>
+
+      <div className="mb-5">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">Bill To</p>
+        {customer ? (
+          <>
+            <p className="text-sm font-medium text-gray-900">{customer.name}</p>
+            {customer.phone && <p className="text-xs text-gray-600">{formatPhoneDisplay(customer.phone)}</p>}
+          </>
+        ) : (
+          <p className="text-sm font-medium text-gray-900">Walk-in Customer</p>
+        )}
+      </div>
+
+      <table className="w-full text-xs border-collapse mb-5">
+        <thead>
+          <tr className="border-b-2 border-gray-800 text-left text-gray-700">
+            <th className="py-1.5 pr-2 font-semibold">#</th>
+            <th className="py-1.5 pr-2 font-semibold">Product</th>
+            <th className="py-1.5 px-2 font-semibold text-right">Qty</th>
+            <th className="py-1.5 px-2 font-semibold text-right">Rate</th>
+            <th className="py-1.5 px-2 font-semibold text-right">Tax</th>
+            <th className="py-1.5 pl-2 font-semibold text-right">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sale.items.map((it, idx) => (
+            <tr key={idx} className="border-b border-gray-200">
+              <td className="py-1.5 pr-2 text-gray-600">{idx + 1}</td>
+              <td className="py-1.5 pr-2 text-gray-900">{it.name}</td>
+              <td className="py-1.5 px-2 text-right text-gray-700">{it.qty}</td>
+              <td className="py-1.5 px-2 text-right text-gray-700">{formatINR(it.price)}</td>
+              <td className="py-1.5 px-2 text-right text-gray-700">₹0</td>
+              <td className="py-1.5 pl-2 text-right font-medium text-gray-900">{formatINR(it.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="flex justify-end mb-5">
+        <div className="w-64 text-xs space-y-1.5">
+          <div className="flex justify-between text-gray-600">
+            <span>Subtotal</span>
+            <span>{formatINR(subtotal)}</span>
+          </div>
+          {discount > 0 && (
+            <div className="flex justify-between text-gray-600">
+              <span>Discount</span>
+              <span>-{formatINR(discount)}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-gray-600">
+            <span>GST/Tax</span>
+            <span>{formatINR(taxAmount)}</span>
+          </div>
+          <div className="flex justify-between text-sm font-bold text-gray-900 pt-1.5 border-t-2 border-gray-800">
+            <span>Grand Total</span>
+            <span>{formatINR(grandTotal)}</span>
+          </div>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-700 mb-8">
+        <span className="font-semibold">Amount in Words: </span>
+        {numberToWordsIndian(grandTotal)} Rupees Only
+      </p>
+
+      <div className="text-[10px] text-gray-500 border-t border-gray-300 pt-3 text-center">
+        <p>Payment Method: {sale.paymentMethod}</p>
+        <p className="mt-1">Thank you for your business!</p>
+        <p className="mt-1">This is a system-generated invoice.</p>
+      </div>
+    </div>,
+    portalNode
   );
 }
 
@@ -1566,6 +1771,7 @@ function Billing() {
   const {
     products,
     sales,
+    customers,
     settings,
     completeSale,
     findCustomerByPhone,
@@ -2623,6 +2829,8 @@ function Billing() {
         </Modal>
 
       )}
+
+      <PrintableInvoice sale={successSale} settings={settings} customers={customers} />
 
     </div>
   );
