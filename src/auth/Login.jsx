@@ -29,7 +29,7 @@ export default function Login() {
           <div className="w-10 h-10 rounded-md bg-green-600 flex items-center justify-center mb-3">
             <IndianRupee size={18} className="text-white" />
           </div>
-          <p className="text-lg font-semibold text-gray-900">FitFuel Supplements</p>
+          <p className="text-lg font-semibold text-gray-900">Alpha Gains Supplements</p>
           <p className="text-sm text-gray-500 mt-0.5">Billing &amp; Inventory</p>
         </div>
 

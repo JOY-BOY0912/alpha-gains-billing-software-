@@ -40,7 +40,7 @@ const TODAY_ISO = (() => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 })();
-const STORE_NAME_DEFAULT = "FitFuel Supplements";
+const STORE_NAME_DEFAULT = "Alpha Gains Supplements";
 
 /* ---------------------------------- helpers ---------------------------------- */
 
