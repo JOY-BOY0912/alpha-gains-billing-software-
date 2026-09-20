@@ -456,6 +456,7 @@ function useStore() {
 }
 
 function StoreProvider({ children }) {
+  const { loading: authLoading, session } = useAuth();
   const [products, setProducts] = useState([]);
   const [sales, setSales] = useState([]);
   const [movements, setMovements] = useState([]);
@@ -506,9 +507,12 @@ function StoreProvider({ children }) {
   }
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!session) return;
+
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authLoading, session]);
 
   // opportunityState mirrors the previous in-memory shape (one entry per
   // customer, derived from their latest customer_followups row) so all the
@@ -1171,58 +1175,58 @@ function InvoiceModal({ sale, onClose }) {
 
   return (
     <>
-    <Modal open={!!sale} onClose={onClose} title={`Invoice #${sale.invoiceNumber}`} width="max-w-md">
-      <div className="text-center mb-4">
-        <p className="text-sm font-semibold text-gray-900">{settings.storeName}</p>
-        <p className="text-xs text-gray-400 mt-0.5">{settings.address}</p>
-        <p className="text-xs text-gray-400">Invoice #{sale.invoiceNumber}</p>
-        <p className="text-xs text-gray-400">
-          {formatDateShort(sale.dateISO)} · {sale.time}
-        </p>
-      </div>
-      <div className="border-t border-dashed border-gray-300 pt-3 space-y-2">
-        {sale.items.map((it, idx) => (
-          <div key={idx} className="flex justify-between text-sm">
-            <div>
-              <p className="text-gray-800">{it.name}</p>
-              <p className="text-xs text-gray-400">
-                {it.qty} × {formatINR(it.price)}
-              </p>
+      <Modal open={!!sale} onClose={onClose} title={`Invoice #${sale.invoiceNumber}`} width="max-w-md">
+        <div className="text-center mb-4">
+          <p className="text-sm font-semibold text-gray-900">{settings.storeName}</p>
+          <p className="text-xs text-gray-400 mt-0.5">{settings.address}</p>
+          <p className="text-xs text-gray-400">Invoice #{sale.invoiceNumber}</p>
+          <p className="text-xs text-gray-400">
+            {formatDateShort(sale.dateISO)} · {sale.time}
+          </p>
+        </div>
+        <div className="border-t border-dashed border-gray-300 pt-3 space-y-2">
+          {sale.items.map((it, idx) => (
+            <div key={idx} className="flex justify-between text-sm">
+              <div>
+                <p className="text-gray-800">{it.name}</p>
+                <p className="text-xs text-gray-400">
+                  {it.qty} × {formatINR(it.price)}
+                </p>
+              </div>
+              <p className="text-gray-800 font-medium">{formatINR(it.total)}</p>
             </div>
-            <p className="text-gray-800 font-medium">{formatINR(it.total)}</p>
+          ))}
+        </div>
+        <div className="border-t border-dashed border-gray-300 mt-3 pt-3 space-y-1.5 text-sm">
+          <div className="flex justify-between text-gray-500">
+            <span>Subtotal</span>
+            <span>{formatINR(sale.subtotal)}</span>
           </div>
-        ))}
-      </div>
-      <div className="border-t border-dashed border-gray-300 mt-3 pt-3 space-y-1.5 text-sm">
-        <div className="flex justify-between text-gray-500">
-          <span>Subtotal</span>
-          <span>{formatINR(sale.subtotal)}</span>
-        </div>
-        {sale.discount > 0 && (
-          <div className="flex justify-between text-red-500">
-            <span>Discount</span>
-            <span>-{formatINR(sale.discount)}</span>
+          {sale.discount > 0 && (
+            <div className="flex justify-between text-red-500">
+              <span>Discount</span>
+              <span>-{formatINR(sale.discount)}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-base font-semibold text-gray-900 pt-1.5 border-t border-gray-200">
+            <span>Total</span>
+            <span>{formatINR(sale.total)}</span>
           </div>
-        )}
-        <div className="flex justify-between text-base font-semibold text-gray-900 pt-1.5 border-t border-gray-200">
-          <span>Total</span>
-          <span>{formatINR(sale.total)}</span>
+          <div className="flex justify-between text-gray-500 pt-1">
+            <span>Payment</span>
+            <span className="font-medium text-gray-700">{sale.paymentMethod}</span>
+          </div>
         </div>
-        <div className="flex justify-between text-gray-500 pt-1">
-          <span>Payment</span>
-          <span className="font-medium text-gray-700">{sale.paymentMethod}</span>
+        <div className="flex gap-2 mt-5">
+          <SecondaryButton className="flex-1" onClick={handleDownload} disabled={downloading}>
+            <Download size={15} /> {downloading ? "Preparing PDF…" : "Download Invoice PDF"}
+          </SecondaryButton>
+          <PrimaryButton className="flex-1" onClick={onClose}>
+            Close
+          </PrimaryButton>
         </div>
-      </div>
-      <div className="flex gap-2 mt-5">
-        <SecondaryButton className="flex-1" onClick={handleDownload} disabled={downloading}>
-          <Download size={15} /> {downloading ? "Preparing PDF…" : "Download Invoice PDF"}
-        </SecondaryButton>
-        <PrimaryButton className="flex-1" onClick={onClose}>
-          Close
-        </PrimaryButton>
-      </div>
-    </Modal>
-    <PrintableInvoice sale={sale} settings={settings} customers={customers} />
+      </Modal>
+      <PrintableInvoice sale={sale} settings={settings} customers={customers} />
     </>
   );
 }
@@ -1995,9 +1999,9 @@ function Billing() {
         return prev.map((c) =>
           c.id === product.id
             ? {
-                ...c,
-                qty: c.qty + 1,
-              }
+              ...c,
+              qty: c.qty + 1,
+            }
             : c
         );
       }
@@ -2225,8 +2229,7 @@ function Billing() {
        * DO NOT clear the cart when an error occurs.
        */
       pushToast(
-        `Failed to complete sale: ${
-          err?.message || "Unknown error"
+        `Failed to complete sale: ${err?.message || "Unknown error"
         }`,
         "error"
       );
@@ -2294,11 +2297,10 @@ function Billing() {
                   addToCart(p)
                 }
                 disabled={disabled}
-                className={`text-left border rounded-lg p-3.5 bg-white transition-colors ${
-                  disabled
-                    ? "opacity-50 cursor-not-allowed border-gray-200"
-                    : "border-gray-200 hover:border-green-400 hover:shadow-sm"
-                }`}
+                className={`text-left border rounded-lg p-3.5 bg-white transition-colors ${disabled
+                  ? "opacity-50 cursor-not-allowed border-gray-200"
+                  : "border-gray-200 hover:border-green-400 hover:shadow-sm"
+                  }`}
               >
                 <p className="text-sm font-medium text-gray-900 leading-tight">
                   {p.name}
@@ -2322,7 +2324,7 @@ function Billing() {
                     )}
                   >
                     {status ===
-                    "In Stock"
+                      "In Stock"
                       ? `Stock: ${p.stock}`
                       : status}
                   </Badge>
@@ -2471,8 +2473,8 @@ function Billing() {
                           Last Purchase:{" "}
                           {stats.lastPurchaseDate
                             ? formatDateShort(
-                                stats.lastPurchaseDate
-                              )
+                              stats.lastPurchaseDate
+                            )
                             : "—"}{" "}
                           · Previous Spend:{" "}
                           {formatINR(
@@ -2558,12 +2560,12 @@ function Billing() {
 
                 {phoneDigits.length ===
                   0 && (
-                  <p className="text-xs text-gray-400 mt-1">
-                    Walk-in Customer —
-                    phone number is
-                    optional.
-                  </p>
-                )}
+                    <p className="text-xs text-gray-400 mt-1">
+                      Walk-in Customer —
+                      phone number is
+                      optional.
+                    </p>
+                  )}
 
               </>
             )}
@@ -2645,7 +2647,7 @@ function Billing() {
                   <p className="w-16 text-right text-sm font-medium text-gray-900">
                     {formatINR(
                       item.price *
-                        item.qty
+                      item.qty
                     )}
                   </p>
 
@@ -2758,11 +2760,10 @@ function Billing() {
                     onClick={() =>
                       setPayment(m)
                     }
-                    className={`flex flex-col items-center gap-1 py-2 rounded-md border text-xs font-medium transition-colors ${
-                      active
-                        ? "border-green-600 bg-green-50 text-green-700"
-                        : "border-gray-200 text-gray-500 hover:bg-gray-50"
-                    }`}
+                    className={`flex flex-col items-center gap-1 py-2 rounded-md border text-xs font-medium transition-colors ${active
+                      ? "border-green-600 bg-green-50 text-green-700"
+                      : "border-gray-200 text-gray-500 hover:bg-gray-50"
+                      }`}
                   >
                     <Icon size={15} />
                     {m}
@@ -2782,8 +2783,8 @@ function Billing() {
               onClick={() =>
                 cart.length
                   ? setConfirmClear(
-                      true
-                    )
+                    true
+                  )
                   : null
               }
               disabled={
